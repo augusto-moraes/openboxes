@@ -237,7 +237,6 @@ class StockMovementService {
         return new PagedResultList(stockMovements, requisitions.totalCount)
     }
 
-
     StockMovement getStockMovement(String id) {
         log.info "Getting stock movement for id ${id}"
 
@@ -265,33 +264,49 @@ class StockMovementService {
     def getStockMovementItems(String id, String stepNumber, String max, String offset) {
         Requisition requisition = Requisition.get(id)
         List<StockMovementItem> stockMovementItems = []
+        List <RequisitionItem> requisitionItems = []
 
-        def requisitionItems = RequisitionItem.createCriteria().list(max: max.toInteger(), offset: offset.toInteger()) {
-            eq("requisition", requisition)
-            isNull("parentRequisitionItem")
+        if (max != null && offset != null) {
+            requisitionItems = RequisitionItem.createCriteria().list(max: max.toInteger(), offset: offset.toInteger()) {
+                eq("requisition", requisition)
+                isNull("parentRequisitionItem")
+            }
+        } else {
+            requisitionItems = RequisitionItem.createCriteria().list() {
+                eq("requisition", requisition)
+                isNull("parentRequisitionItem")
+            }
         }
         requisitionItems.each { requisitionItem ->
             StockMovementItem stockMovementItem = StockMovementItem.createFromRequisitionItem(requisitionItem)
             stockMovementItems.add(stockMovementItem)
         }
 
+        def totalCount = 0
+
+        if (requisitionItems instanceof PagedResultList) {
+            totalCount = requisitionItems.totalCount
+        } else {
+            totalCount = requisitionItems.size()
+        }
+
         if (stepNumber.equals("3")) {
             List<EditPageItem> editPageItems = getEditPageItems(stockMovementItems, requisition.origin)
-            return new PagedResultList(editPageItems, requisitionItems.totalCount)
+            return new PagedResultList(editPageItems, totalCount)
         } else if (stepNumber.equals("4")) {
             List<PickPageItem> pickPageItems = getPickPageItems(stockMovementItems)
-            return new PagedResultList(pickPageItems, requisitionItems.totalCount)
+            return new PagedResultList(pickPageItems, pickPageItems.size())
         } else if (stepNumber.equals("5")) {
             List<PackPageItem> packPageItems = getPackPageItems(id, max, offset)
-            return new PagedResultList(packPageItems, requisitionItems.totalCount)
+            return new PagedResultList(packPageItems, packPageItems.size())
         } else if (stepNumber.equals("6")) {
             if (!requisition.origin.isSupplier() && requisition.origin.supports(ActivityCode.MANAGE_INVENTORY)) {
                 List<PackPageItem> packPageItems = getPackPageItems(id, max, offset)
-                return new PagedResultList(packPageItems, requisitionItems.totalCount)
+                return new PagedResultList(packPageItems, packPageItems.size())
             }
         }
 
-        return new PagedResultList(stockMovementItems, requisitionItems.totalCount)
+        return new PagedResultList(stockMovementItems, totalCount)
     }
 
     List<EditPageItem> getEditPageItems(List<StockMovementItem> stockMovementItems, Location origin) {
@@ -326,7 +341,7 @@ class StockMovementService {
         }
 
         if (max != null && offset != null) {
-            return packPageItems.subList(offset.toInteger(), offset.toInteger() + max.toInteger());
+            return packPageItems.subList(offset.toInteger(), offset.toInteger() + max.toInteger() > packPageItems.size() ? packPageItems.size() : offset.toInteger() + max.toInteger());
         }
 
         return packPageItems
@@ -1421,16 +1436,14 @@ class StockMovementService {
         return shipmentItems
     }
 
-    StockMovement updatePackPageItems(StockMovement stockMovement) {
-        if (stockMovement?.packPage?.packPageItems) {
-            stockMovement.packPage.packPageItems.each { PackPageItem packPageItem ->
+    StockMovement updatePackPageItems(List<PackPageItem> packPageItems) {
+        if (packPageItems) {
+            packPageItems.each { PackPageItem packPageItem ->
                 updateShipmentItemAndProcessSplitLines(packPageItem)
             }
         }
 
-        stockMovement.packPage = getPackPage(stockMovement.id)
-
-        return stockMovement
+        return packPageItems
     }
 
     void updateShipmentItemAndProcessSplitLines(PackPageItem packPageItem) {

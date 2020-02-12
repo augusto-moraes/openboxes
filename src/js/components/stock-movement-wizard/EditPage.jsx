@@ -37,6 +37,10 @@ const FIELDS = {
   editPageItems: {
     type: ArrayField,
     arrowsNavigation: true,
+    virtualized: ({ isPaginated }) => isPaginated,
+    totalCount: ({ totalCount }) => totalCount,
+    isRowLoaded: ({ isRowLoaded }) => isRowLoaded,
+    loadMoreRows: ({ loadMoreRows }) => loadMoreRows(),
     rowComponent: TableRowWithSubfields,
     getDynamicRowAttr: ({ rowValues, subfield }) => {
       let className = rowValues.statusCode === 'SUBSTITUTED' ? 'crossed-out ' : '';
@@ -235,11 +239,14 @@ class EditItemsPage extends Component {
       revisedItems: [],
       values: { ...this.props.initialValues, editPageItems: [] },
       hasItemsLoaded: false,
+      totalCount: 0,
     };
 
     this.revertItem = this.revertItem.bind(this);
     this.fetchEditPageItems = this.fetchEditPageItems.bind(this);
     this.reviseRequisitionItems = this.reviseRequisitionItems.bind(this);
+    this.isRowLoaded = this.isRowLoaded.bind(this);
+    this.loadMoreRows = this.loadMoreRows.bind(this);
     this.props.showSpinner();
   }
 
@@ -259,6 +266,40 @@ class EditItemsPage extends Component {
     }
   }
 
+  setEditPageItems(response) {
+    const { data } = response.data;
+    const { totalCount } = response.data;
+
+    console.log(data);
+
+    const editPageItems = _.map(
+      data,
+      val => ({
+        ...val,
+        disabled: true,
+        quantityAvailable: val.quantityAvailable > 0 ? val.quantityAvailable : 0,
+        product: {
+          ...val.product,
+          label: `${val.productCode} ${val.productName}`,
+        },
+        substitutionItems: _.map(val.substitutionItems, sub => ({
+          ...sub,
+          requisitionItemId: val.requisitionItemId,
+        })),
+      }),
+    );
+
+    this.setState({
+      revisedItems: _.filter(editPageItems, item => item.statusCode === 'CHANGED'),
+      values: {
+        ...this.state.values,
+        editPageItems: _.concat(this.state.values.editPageItems, editPageItems),
+      },
+      hasItemsLoaded: totalCount === this.state.values.editPageItems.length,
+      totalCount,
+    });
+  }
+
   dataFetched = false;
 
   /**
@@ -273,35 +314,71 @@ class EditItemsPage extends Component {
       this.props.fetchReasonCodes();
     }
 
-    this.fetchLineItems().then((resp) => {
-      const { statusCode, editPage } = resp.data.data;
-      const editPageItems = _.map(
-        editPage.editPageItems,
-        val => ({
-          ...val,
-          disabled: true,
-          quantityAvailable: val.quantityAvailable > 0 ? val.quantityAvailable : 0,
-          product: {
-            ...val.product,
-            label: `${val.productCode} ${val.productName}`,
-          },
-          substitutionItems: _.map(val.substitutionItems, sub => ({
-            ...sub,
-            requisitionItemId: val.requisitionItemId,
-          })),
-        }),
-      );
+    this.fetchEditPageData().then((resp) => {
+      const { statusCode } = resp.data.data;
 
       this.setState({
         statusCode,
-        revisedItems: _.filter(editPageItems, item => item.statusCode === 'CHANGED'),
-        values: { ...this.state.values, editPageItems },
-        hasItemsLoaded: true,
       }, () => this.props.hideSpinner());
     }).catch(() => {
       this.props.hideSpinner();
     });
+
+    if (0) {
+      this.fetchItems();
+    }
   }
+
+  fetchItems() {
+    const url = `/openboxes/api/stockMovements/${this.state.values.stockMovementId}/stockMovementItems?stepNumber=3`;
+    apiClient.get(url)
+      .then((response) => {
+        this.setEditPageItems(response);
+        this.setState({
+          hasItemsLoaded: true,
+        }, () => this.props.hideSpinner());
+      });
+  }
+
+  /**
+   * Saves changes made in subsitution modal and updates data.
+   * @public
+   */
+  fetchEditPageItems() {
+    const url = `/openboxes/api/stockMovements/${this.state.values.stockMovementId}/stockMovementItems?stepNumber=3`;
+    apiClient.get(url)
+      .then((response) => {
+        const { data } = response.data;
+        this.setState({
+          values: {
+            ...this.state.values,
+            editPageItems: _.map(data, item => ({
+              ...item,
+              quantityAvailable: item.quantityAvailable || 0,
+              substitutionItems: _.map(item.substitutionItems, sub => ({
+                ...sub,
+                requisitionItemId: item.requisitionItemId,
+              })),
+            })),
+          },
+        }, () => this.props.hideSpinner());
+      }).catch(() => {
+        this.props.hideSpinner();
+      });
+  }
+
+  loadMoreRows({ startIndex, stopIndex }) {
+    const url = `/openboxes/api/stockMovements/${this.state.values.stockMovementId}/stockMovementItems?offset=${startIndex}&max=${stopIndex - startIndex}&stepNumber=3`;
+    apiClient.get(url)
+      .then((response) => {
+        this.setEditPageItems(response);
+      });
+  }
+
+  isRowLoaded({ index }) {
+    return !!this.state.values.editPageItems[index];
+  }
+
 
   /**
    * Sends data of revised items with post method.
@@ -449,8 +526,8 @@ class EditItemsPage extends Component {
    * Fetches 3rd step data from current stock movement.
    * @public
    */
-  fetchLineItems() {
-    const url = `/openboxes/api/stockMovements/${this.state.values.stockMovementId}?stepNumber=3`;
+  fetchEditPageData() {
+    const url = `/openboxes/api/stockMovements/${this.state.values.stockMovementId}`;
 
     return apiClient.get(url)
       .then(resp => resp)
@@ -500,32 +577,6 @@ class EditItemsPage extends Component {
         }),
       },
       revisedItems: update(this.state.revisedItems, { $splice: [[revisedItemIndex, 1]] }),
-    });
-  }
-
-  /**
-   * Saves changes made in subsitution modal and updates data.
-   * @public
-   */
-  fetchEditPageItems() {
-    this.fetchLineItems().then((resp) => {
-      const { editPage } = resp.data.data;
-
-      this.setState({
-        values: {
-          ...this.state.values,
-          editPageItems: _.map(editPage.editPageItems, item => ({
-            ...item,
-            quantityAvailable: item.quantityAvailable || 0,
-            substitutionItems: _.map(item.substitutionItems, sub => ({
-              ...sub,
-              requisitionItemId: item.requisitionItemId,
-            })),
-          })),
-        },
-      }, () => this.props.hideSpinner());
-    }).catch(() => {
-      this.props.hideSpinner();
     });
   }
 
@@ -676,6 +727,10 @@ class EditItemsPage extends Component {
                 onResponse: this.fetchEditPageItems,
                 revertItem: this.revertItem,
                 reviseRequisitionItems: this.reviseRequisitionItems,
+                totalCount: this.state.totalCount,
+                loadMoreRows: this.loadMoreRows,
+                isRowLoaded: this.isRowLoaded,
+                isPaginated: this.props.isPaginated,
                 values,
               }))}
               <div>
@@ -713,6 +768,7 @@ const mapStateToProps = state => ({
   reasonCodes: state.reasonCodes.data,
   translate: translateWithDefaultMessage(getTranslate(state.localize)),
   stockMovementTranslationsFetched: state.session.fetchedTranslations.stockMovement,
+  isPaginated: state.session.isPaginated,
 });
 
 export default connect(mapStateToProps, {
@@ -741,4 +797,6 @@ EditItemsPage.propTypes = {
   reasonCodes: PropTypes.arrayOf(PropTypes.shape({})).isRequired,
   translate: PropTypes.func.isRequired,
   stockMovementTranslationsFetched: PropTypes.bool.isRequired,
+  /** Return true if pagination is enabled */
+  isPaginated: PropTypes.bool.isRequired,
 };

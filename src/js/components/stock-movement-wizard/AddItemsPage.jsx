@@ -36,9 +36,12 @@ const DELETE_BUTTON_FIELD = {
   buttonLabel: 'react.default.button.delete.label',
   buttonDefaultMessage: 'Delete',
   getDynamicAttr: ({
-    fieldValue, removeItem, removeRow, showOnly,
+    fieldValue, removeItem, removeRow, showOnly, setTotalCount,
   }) => ({
-    onClick: fieldValue.id ? () => removeItem(fieldValue.id).then(() => removeRow()) : removeRow,
+    onClick: fieldValue.id ? () => {
+      removeItem(fieldValue.id).then(() => removeRow());
+      setTotalCount(1);
+    } : () => { setTotalCount(-1); removeRow(); },
     disabled: fieldValue.statusCode === 'SUBSTITUTED' || showOnly,
   }),
   attributes: {
@@ -50,15 +53,25 @@ const NO_STOCKLIST_FIELDS = {
   lineItems: {
     type: ArrayField,
     arrowsNavigation: true,
-    // eslint-disable-next-line react/prop-types
-    addButton: ({ addRow, getSortOrder, showOnly }) => (
+    virtualized: ({ isPaginated }) => isPaginated,
+    totalCount: ({ totalCount }) => totalCount,
+    isRowLoaded: ({ isRowLoaded }) => isRowLoaded,
+    loadMoreRows: ({ loadMoreRows }) => loadMoreRows(),
+    addButton: ({
+      // eslint-disable-next-line react/prop-types
+      addRow, getSortOrder, showOnly, setTotalCount,
+    }) => (
       <button
         type="button"
         className="btn btn-outline-success btn-xs"
         disabled={showOnly}
-        onClick={() => addRow({
-          sortOrder: getSortOrder(),
-        })}
+        onClick={() => {
+          setTotalCount(1);
+          addRow({
+            sortOrder: getSortOrder(),
+          });
+        }
+        }
       ><Translate id="react.default.button.addLine.label" defaultMessage="Add line" />
       </button>
     ),
@@ -137,15 +150,23 @@ const NO_STOCKLIST_FIELDS = {
 const STOCKLIST_FIELDS = {
   lineItems: {
     type: ArrayField,
-    virtualized: true,
     arrowsNavigation: true,
+    virtualized: ({ isPaginated }) => isPaginated,
+    totalCount: ({ totalCount }) => totalCount,
+    isRowLoaded: ({ isRowLoaded }) => isRowLoaded,
+    loadMoreRows: ({ loadMoreRows }) => loadMoreRows(),
+    addButton: ({
     // eslint-disable-next-line react/prop-types
-    addButton: ({ addRow, getSortOrder, newItemAdded }) => (
+      addRow, getSortOrder, newItemAdded, setTotalCount,
+    }) => (
       <button
         type="button"
         className="btn btn-outline-success btn-xs"
         onClick={() => {
-          addRow({ sortOrder: getSortOrder() });
+          setTotalCount(1);
+          addRow({
+            sortOrder: getSortOrder(),
+          });
           newItemAdded();
         }}
       ><Translate id="react.default.button.addLine.label" defaultMessage="Add line" />
@@ -217,14 +238,21 @@ const VENDOR_FIELDS = {
   lineItems: {
     type: ArrayField,
     arrowsNavigation: true,
+    virtualized: ({ isPaginated }) => isPaginated,
+    totalCount: ({ totalCount }) => totalCount,
+    isRowLoaded: ({ isRowLoaded }) => isRowLoaded,
+    loadMoreRows: ({ loadMoreRows }) => loadMoreRows(),
     // eslint-disable-next-line react/prop-types
-    addButton: ({ addRow, getSortOrder }) => (
+    addButton: ({ addRow, getSortOrder, setTotalCount }) => (
       <button
         type="button"
         className="btn btn-outline-success btn-xs"
-        onClick={() => addRow({
-          sortOrder: getSortOrder(),
-        })}
+        onClick={() => {
+          setTotalCount(1);
+          addRow({
+            sortOrder: getSortOrder(),
+          });
+        }}
       ><Translate id="react.default.button.addLine.label" defaultMessage="Add line" />
       </button>
     ),
@@ -334,6 +362,7 @@ class AddItemsPage extends Component {
       sortOrder: 0,
       values: this.props.initialValues,
       newItem: false,
+      totalCount: 0,
     };
 
     this.props.showSpinner();
@@ -344,6 +373,9 @@ class AddItemsPage extends Component {
     this.confirmTransition = this.confirmTransition.bind(this);
     this.newItemAdded = this.newItemAdded.bind(this);
     this.validate = this.validate.bind(this);
+    this.isRowLoaded = this.isRowLoaded.bind(this);
+    this.loadMoreRows = this.loadMoreRows.bind(this);
+    this.setTotalCount = this.setTotalCount.bind(this);
 
     this.debouncedProductsFetch = debounceProductsFetch(
       this.props.debounceTime,
@@ -467,6 +499,14 @@ class AddItemsPage extends Component {
     );
   }
 
+  setTotalCount(value) {
+    this.setState({
+      totalCount: this.state.totalCount + value,
+    });
+    console.log(this.state.totalCount);
+  }
+
+
   getSortOrder() {
     this.setState({
       sortOrder: this.state.sortOrder + 100,
@@ -474,6 +514,35 @@ class AddItemsPage extends Component {
 
     return this.state.sortOrder;
   }
+
+  setLineItems(response) {
+    const { data } = response.data;
+    const { totalCount } = response.data;
+
+    const lineItemsData = _.map(
+      data,
+      val => ({
+        ...val,
+        disabled: true,
+        product: {
+          ...val.product,
+          label: `${val.productCode} ${val.product.name}`,
+        },
+      }),
+    );
+
+    const sortOrder = _.toInteger(_.last(lineItemsData).sortOrder) + 100;
+    this.setState({
+      currentLineItems: data,
+      values: {
+        ...this.state.values,
+        lineItems: _.concat(this.state.values.lineItems, lineItemsData),
+      },
+      sortOrder,
+      totalCount,
+    });
+  }
+
 
   dataFetched = false;
 
@@ -580,49 +649,14 @@ class AddItemsPage extends Component {
       this.props.fetchUsers();
     }
 
-    this.fetchAndSetLineItems();
-  }
+    this.fetchAddItemsPageData();
 
-  /**
-   * Fetches stock movement's line items and sets them in redux form and in
-   * state as current line items.
-   * @public
-   */
-  fetchAndSetLineItems() {
-    this.props.showSpinner();
-    this.fetchLineItems().then((resp) => {
-      const { lineItems } = resp.data.data;
-      const { hasManageInventory } = resp.data.data;
-      const { statusCode } = resp.data.data;
-      let lineItemsData;
-      if (!lineItems.length) {
-        lineItemsData = new Array(1).fill({ sortOrder: 100 });
-      } else {
-        lineItemsData = _.map(
-          lineItems,
-          val => ({
-            ...val,
-            disabled: true,
-            product: {
-              ...val.product,
-              label: `${val.productCode} ${val.product.name}`,
-            },
-          }),
-        );
-      }
-
-      const sortOrder = _.toInteger(_.last(lineItemsData).sortOrder) + 100;
-      this.setState({
-        currentLineItems: lineItems,
-        values: {
-          ...this.state.values,
-          lineItems: lineItemsData,
-          hasManageInventory,
-          statusCode,
-        },
-        sortOrder,
-      }, () => this.props.hideSpinner());
-    }).catch(() => this.props.hideSpinner());
+    if (this.props.isPaginated) {
+      this.fetchLineItems()
+        .then((response) => {
+          this.setLineItems(response);
+        });
+    }
   }
 
   /**
@@ -630,11 +664,45 @@ class AddItemsPage extends Component {
    * @public
    */
   fetchLineItems() {
-    const url = `/openboxes/api/stockMovements/${this.state.values.stockMovementId}?stepNumber=2`;
+    const url = `/openboxes/api/stockMovements/${this.state.values.stockMovementId}/stockMovementItems?stepNumber=2`;
 
     return apiClient.get(url)
       .then(resp => resp)
       .catch(err => err);
+  }
+
+  /**
+   * Fetches stock movement's line items and sets them in redux form and in
+   * state as current line items.
+   * @public
+   */
+  fetchAddItemsPageData() {
+    this.props.showSpinner();
+
+    const url = `/openboxes/api/stockMovements/${this.state.values.stockMovementId}`;
+    apiClient.get(url)
+      .then((resp) => {
+        const { hasManageInventory } = resp.data.data;
+        const { statusCode } = resp.data.data;
+
+        this.setState({
+          values: {
+            ...this.state.values,
+            hasManageInventory,
+            statusCode,
+          },
+        }, () => this.props.hideSpinner());
+      });
+  }
+
+
+  loadMoreRows({ startIndex, stopIndex }) {
+    console.log(startIndex, stopIndex);
+    const url = `/openboxes/api/stockMovements/${this.state.values.stockMovementId}/stockMovementItems?offset=${startIndex}&max=${stopIndex - startIndex}&stepNumber=2`;
+    apiClient.get(url)
+      .then((response) => {
+        this.setLineItems(response);
+      });
   }
 
   /**
@@ -886,7 +954,7 @@ class AddItemsPage extends Component {
 
     return apiClient.delete(removeItemsUrl)
       .catch(() => {
-        this.fetchAndSetLineItems();
+        this.fetchLineItems();
         return Promise.reject(new Error('react.stockMovement.error.deleteRequisitionItem.label'));
       });
   }
@@ -923,6 +991,10 @@ class AddItemsPage extends Component {
     const lineItems = _.filter(formValues.lineItems, item => !_.isEmpty(item));
 
     this.saveItemsAndExportTemplate(formValues, lineItems);
+  }
+
+  isRowLoaded({ index }) {
+    return !!this.state.values.lineItems[index];
   }
 
   /**
@@ -969,7 +1041,7 @@ class AddItemsPage extends Component {
 
     return apiClient.post(url, formData, config)
       .then(() => {
-        this.fetchAndSetLineItems();
+        this.fetchLineItems();
       })
       .catch(() => {
         this.props.hideSpinner();
@@ -1066,7 +1138,7 @@ class AddItemsPage extends Component {
                 <button
                   type="button"
                   disabled={invalid}
-                  onClick={() => this.removeAll().then(() => this.fetchAndSetLineItems())}
+                  onClick={() => this.removeAll().then(() => this.fetchLineItems())}
                   className="float-right mb-1 btn btn-outline-danger align-self-end btn-xs"
                 >
                   <span><i className="fa fa-remove pr-2" /><Translate id="react.default.button.deleteAll.label" defaultMessage="Delete all" /></span>
@@ -1091,6 +1163,11 @@ class AddItemsPage extends Component {
                   getSortOrder: this.getSortOrder,
                   newItemAdded: this.newItemAdded,
                   newItem: this.state.newItem,
+                  totalCount: this.state.totalCount,
+                  loadMoreRows: this.loadMoreRows,
+                  isRowLoaded: this.isRowLoaded,
+                  setTotalCount: this.setTotalCount,
+                  isPaginated: this.props.isPaginated,
                   showOnly,
                 }))}
               <div>
@@ -1136,6 +1213,7 @@ const mapStateToProps = state => ({
   minSearchLength: state.session.searchConfig.minSearchLength,
   minimumExpirationDate: state.session.minimumExpirationDate,
   hasPackingSupport: state.session.currentLocation.hasPackingSupport,
+  isPaginated: state.session.isPaginated,
 });
 
 export default (connect(mapStateToProps, {
@@ -1176,4 +1254,6 @@ AddItemsPage.propTypes = {
   minimumExpirationDate: PropTypes.string.isRequired,
   /** Is true when currently selected location supports packing */
   hasPackingSupport: PropTypes.bool.isRequired,
+  /** Return true if pagination is enabled */
+  isPaginated: PropTypes.bool.isRequired,
 };
